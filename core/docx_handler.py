@@ -275,23 +275,3 @@ class DocxHandler:
             raise ValueError("Save path must be provided.")
         self.doc.save(path)
         print(f"Document saved to {path}")
-
-# --- 使用示例 ---
-if __name__ == "__main__":
-    path = r'D:\陈信嘉2025\论文\信息论\2023311A11-陈信嘉-信息论导论课程报告-主题2.docx'
-    reader = DocxHandler(path)
-    details = reader.get_full_details()
-    for item in details:
-        if item["type"] == "paragraph":
-            print(f"--- 段落 (样式: {item['style']}) ---")
-            for run in item["runs"]:
-                # 过滤掉空字符串的 run
-                if not run["text"].strip(): continue
-                
-                fmt = []
-                if run["bold"]: fmt.append("加粗")
-                if run["italic"]: fmt.append("斜体")
-                if run["underline"]: fmt.append("下划线")
-                size = f"{run['font_size']}pt" if run['font_size'] else "默认大小"
-                
-                print(f"内容: '{run['text']}' | 格式: [{', '.join(fmt)}] | 字体: {run['font_name']} | 大小: {size}")

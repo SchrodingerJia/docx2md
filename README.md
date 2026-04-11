@@ -1,6 +1,6 @@
-# DOCX 转 Markdown 转换器
+# PDF/DOCX 转 Markdown 转换器
 
-这是一个将 Microsoft Word (.docx) 文件转换为 Markdown (.md) 格式的 Python 工具。它能够解析文档中的文本、样式、表格、图片、超链接和数学公式，并生成结构化的 Markdown 文档。
+这是一个将 Microsoft Word (.docx) 文件或 PDF (.pdf) 文件转换为 Markdown (.md) 格式的 Python 工具。它能够解析文档中的文本、样式、表格、图片、超链接和数学公式，并生成结构化的 Markdown 文档。
 
 ## 项目结构
 
@@ -9,10 +9,11 @@ docx2md/
 ├── core/                   # 核心功能模块
 │   ├── __init__.py
 │   ├── docx_handler.py     # DOCX 文件解析与处理
-│   ├── docx_to_markdown.py # 结构化数据转 Markdown
+│   ├── pdf_handler.py      # PDF 文件解析与处理
+│   ├── translator.py       # 结构化数据转 Markdown
 │   └── main.py             # 主程序入口
 ├── assets/                 # 资源文件
-│   └── images/             # 从 DOCX 提取的图片
+│   └── images/             # 从源文件提取的图片
 ├── requirements.txt        # 项目依赖
 └── README.md               # 项目说明
 ```
@@ -44,29 +45,6 @@ pip install -r requirements.txt
 python core/main.py
 ```
 
-或者直接使用以下代码片段：
-
-```python
-from core.docx_handler import DocxHandler
-from core.docx_to_markdown import DocxToMarkdown
-
-# 指定输入和输出文件路径
-docx_file = "input.docx"
-md_file = "output.md"
-
-# 解析 DOCX 文件
-reader = DocxHandler(docx_file)
-details = reader.get_full_details()
-
-# 转换为 Markdown
-converter = DocxToMarkdown(details)
-markdown_text = converter.convert()
-
-# 保存到文件
-converter.save_to_file(md_file)
-print(f"转换完成！Markdown 文件已保存至: {md_file}")
-```
-
 ### 3. 输出示例
 
 转换后的 Markdown 文件将包含：
@@ -87,6 +65,7 @@ print(f"转换完成！Markdown 文件已保存至: {md_file}")
 
 主要依赖：
 - `python-docx`：用于读取和操作 DOCX 文件。
+- `marker-pdf`：用于读取和操作 PDF 文件。
 
 ## 许可证
 

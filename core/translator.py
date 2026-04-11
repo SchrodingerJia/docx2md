@@ -1,9 +1,10 @@
 import re
 
-class DocxToMarkdown:
+class MarkdownGenerater:
     def __init__(self, structured_data):
         """
-        :param structured_data: 由 EnhancedDocxReader 生成的结构化数据列表
+        初始化 MarkdownGenerater 转换器
+        :param structured_data: 由 DocxReader/PdfHandler 生成的结构化数据列表
         """
         self.data = structured_data
         # 映射 Word 样式名到 Markdown 标题

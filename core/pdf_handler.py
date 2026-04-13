@@ -1,13 +1,11 @@
 import os
-import tempfile
+import pymupdf
 from typing import List, Dict, Any
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
 
 class PdfHandler:
     """
-    基于 marker-pdf 库的 PDF 处理器。
-    使用 Python API 解析 PDF 并生成与 DocxHandler 格式相同的结构化 JSON。
+    基于 pymupdf 库的 PDF 处理器。
+    解析 PDF 并生成与 DocxHandler 格式相同的结构化 JSON。
     """
     def __init__(self, file_path: str|None = None, image_dir: str = "images"):
         """
@@ -17,7 +15,7 @@ class PdfHandler:
         """
         self.file_path = file_path
         self.image_dir = image_dir
-        self.raw_json_data = None  # 存储 marker 转换后的内部对象
+        self.raw_json_data = None  # 存储 pymupdf 转换后的内部对象
 
         if not os.path.exists(image_dir):
             os.makedirs(image_dir)
@@ -27,98 +25,154 @@ class PdfHandler:
 
     def _parse_pdf(self, pdf_path: str):
         """
-        使用 marker 的 Python API 解析 PDF 并提取图片。
+        使用 pymupdf 解析 PDF 并提取图片。
+        pymupdf 的 Document 对象本身就包含了所有页面信息，
+        因此直接存储 doc 对象以便后续逐步解析。
         """
-        # 创建临时目录用于 marker 输出图片
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # 配置 converter
-            config = {
-                "output_format": "json",   # 获取结构化数据
-                "extract_images": True,    # 提取图片
-                "image_dir": tmpdir,       # marker 会将图片输出到此目录
-            }
-            converter = PdfConverter(
-                artifact_dict=create_model_dict(),
-                config=config
-            )
+        self.doc = pymupdf.open(pdf_path)
+        self._extract_all_images()
 
-            # 执行转换，返回一个 RenderedDocument 对象
-            rendered = converter(pdf_path)
-            self.raw_json_data = rendered
-
-            # 将 marker 提取的图片移动到我们的 image_dir
-            marker_images_dir = os.path.join(tmpdir, "images")
-            if os.path.exists(marker_images_dir):
-                for img_file in os.listdir(marker_images_dir):
-                    src = os.path.join(marker_images_dir, img_file)
-                    dst = os.path.join(self.image_dir, img_file)
-                    if not os.path.exists(dst):
-                        os.rename(src, dst)
+    def _extract_all_images(self):
+        """
+        提取 PDF 中所有图片并保存到 self.image_dir。
+        """
+        for page_num, page in enumerate(self.doc):
+            image_list = page.get_images()
+            for img_index, img in enumerate(image_list):
+                xref = img[0]
+                try:
+                    pix = pymupdf.Pixmap(self.doc, xref)
+                    if pix.n - pix.alpha > 3:
+                        pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+                    img_filename = f"page_{page_num+1}_img_{img_index+1}.png"
+                    pix.save(os.path.join(self.image_dir, img_filename))
+                    pix = None
+                except Exception as e:
+                    print(f"Error extracting image on page {page_num+1}: {e}")
 
     def get_full_details(self) -> List[Dict[str, Any]]:
         """
         返回与 DocxHandler.get_full_details() 格式完全一致的结构化数据。
         """
-        if not self.raw_json_data:
+        if not self.doc:
             return []
 
         content_details = []
-        # rendered.children 是页面列表
-        for page in self.raw_json_data.children:
-            for block in page.children:
-                block_type = block.block_type
-
-                if block_type in ("Text", "TextInlineMath"):
-                    content_details.append(self._parse_text_block(block))
-                elif block_type == "Formula":
-                    content_details.append(self._parse_formula_block(block))
-                elif block_type == "Table":
-                    content_details.append(self._parse_table_block(block))
-                elif block_type == "Figure":
-                    content_details.append(self._parse_figure_block(block))
-                # 可根据需要扩展其他类型，如 ListItem
-
+        for page_num, page in enumerate(self.doc):
+            # 获取页面的结构化字典
+            page_dict = page.get_text("dict")
+            # 1. 先处理图片块（Figure）
+            content_details.extend(self._extract_figure_blocks_from_page(page_dict, page_num))
+            # 2. 处理文本块（包括表格识别）
+            content_details.extend(self._extract_text_blocks_from_page(page, page_dict, page_num))
         return content_details
 
-    def _parse_text_block(self, block) -> Dict[str, Any]:
-        """解析文本块，处理格式（加粗、斜体、公式等）"""
-        runs = []
-        for child in getattr(block, 'children', []):
-            child_type = child.block_type
-
-            if child_type == "Span":
-                # 普通文本片段
-                runs.append({
-                    "type": "text",
-                    "text": getattr(child, 'text', ""),
-                    "bold": getattr(child, 'bold', False),
-                    "italic": getattr(child, 'italic', False),
-                    "underline": False,
-                    "color": "Default",
-                    "font_size": getattr(child, 'font_size', None)
-                })
-            elif child_type == "Formula":
-                # 行内公式
-                runs.append({
-                    "type": "formula",
-                    "text": getattr(child, 'text', ""),
-                    "is_block": False
-                })
-            elif child_type == "Picture":
-                # 行内图片
-                img_filename = getattr(child, 'image_filename', None)
-                if img_filename:
-                    runs.append({
+    def _extract_figure_blocks_from_page(self, page_dict: dict, page_num: int) -> List[Dict[str, Any]]:
+        """
+        从页面字典中提取独立的图片块（Figure）。
+        """
+        figures = []
+        for block in page_dict.get("blocks", []):
+            if block.get("type") == 1:  # 图片块
+                img_filename = f"page_{page_num+1}_block_{block['number']}.png"
+                figures.append({
+                    "type": "paragraph",
+                    "style": "Figure",
+                    "list_level": None,
+                    "runs": [{
                         "type": "image",
                         "src": os.path.join(self.image_dir, img_filename)
-                    })
+                    }]
+                })
+        return figures
 
-        # 样式和列表层级
+    def _extract_text_blocks_from_page(self, page: pymupdf.Page, page_dict: dict, page_num: int) -> List[Dict[str, Any]]:
+        """
+        处理文本块和表格。
+        首先使用 find_tables() 识别表格区域，然后解析普通文本块时跳过这些区域。
+        """
+        content = []
+        
+        # 查找表格
+        tables = page.find_tables()
+        table_rects = []
+        if tables and tables.tables:
+            for table in tables:
+                table_rects.append(table.bbox)
+                content.append(self._parse_table_block(table))
+        
+        # 解析文本块，跳过表格区域
+        for block in page_dict.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            
+            # 检查该文本块是否在表格区域内
+            bbox = block.get("bbox")
+            if bbox and self._is_inside_any_table(bbox, table_rects):
+                continue
+            
+            # 处理普通文本块
+            block_content = self._parse_text_block(block)
+            if block_content:
+                content.append(block_content)
+        
+        return content
+
+    def _is_inside_any_table(self, block_bbox: List[float], table_rects: List[List[float]]) -> bool:
+        """
+        检查文本块是否位于任何表格区域内。
+        """
+        if not table_rects:
+            return False
+        x0, y0, x1, y1 = block_bbox
+        for t_bbox in table_rects:
+            tx0, ty0, tx1, ty1 = t_bbox
+            if (x0 >= tx0 and x1 <= tx1 and y0 >= ty0 and y1 <= ty1):
+                return True
+        return False
+
+    def _parse_text_block(self, block: dict) -> Dict[str, Any]:
+        """
+        解析文本块，处理格式（加粗、斜体、公式等）。
+        pymupdf 的 dict 结构包含 lines -> spans 层次，spans 提供了字体、字号等信息。
+        """
+        runs = []
         style = "Default"
-        if "Heading" in block.block_type:
-            style = block.block_type  # e.g., "Heading1"
-        list_level = getattr(block, 'list_level', None)
-
+        
+        # 检测标题（基于字号或字体）
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                font_size = span.get("size", 0)
+                font_name = span.get("font", "").lower()
+                flags = span.get("flags", 0)
+                
+                # 构建 run 对象
+                run = {
+                    "type": "text",
+                    "text": span.get("text", ""),
+                    "bold": bool(flags & 2**4),  # 粗体标志
+                    "italic": bool(flags & 2**1), # 斜体标志
+                    "underline": bool(flags & 2**2), # 下划线标志
+                    "color": self._get_span_color(span),
+                    "font_size": font_size
+                }
+                runs.append(run)
+                
+                # 根据字号或字体判断标题样式
+                if font_size > 14:
+                    style = "Heading1"
+                elif font_size > 12:
+                    style = "Heading2"
+                elif "bold" in font_name:
+                    style = "Heading3"
+        
+        # 检测列表层级（根据缩进）
+        list_level = None
+        if block.get("bbox"):
+            left_margin = block["bbox"][0]
+            if left_margin > 50:
+                list_level = int(left_margin / 30)
+        
         return {
             "type": "paragraph",
             "style": style,
@@ -126,47 +180,66 @@ class PdfHandler:
             "runs": runs
         }
 
-    def _parse_formula_block(self, block) -> Dict[str, Any]:
-        """解析块级公式"""
+    def _get_span_color(self, span: dict) -> str:
+        """
+        从 span 中提取颜色信息（如果存在）。
+        """
+        color = span.get("color", 0)
+        if color:
+            # 简单处理：将整数颜色转换为十六进制
+            return f"#{color:06x}"
+        return "Default"
+
+    def _parse_formula_block(self, block: dict) -> Dict[str, Any]:
+        """
+        解析块级公式（如果需要）。
+        """
+        # pymupdf 原生不直接识别公式，可以结合特殊字体或位置判断
+        # 这里留作扩展点
         return {
             "type": "paragraph",
             "style": "Formula",
             "list_level": None,
             "runs": [{
                 "type": "formula",
-                "text": getattr(block, 'text', ""),
+                "text": "",
                 "is_block": True
             }]
         }
 
-    def _parse_table_block(self, block) -> Dict[str, Any]:
-        """解析表格"""
+    def _parse_table_block(self, table) -> Dict[str, Any]:
+        """
+        解析表格。
+        pymupdf 的 table 对象提供了 .extract() 方法直接获取纯文本内容。
+        """
         rows_data = []
-        for row in getattr(block, 'rows', []):
-            row_cells = []
-            for cell in row.cells:
-                cell_paras = []
-                for cell_block in cell.children:
-                    if cell_block.block_type in ("Text", "TextInlineMath"):
-                        cell_paras.append(self._parse_text_block(cell_block))
-                row_cells.append(cell_paras)
-            rows_data.append(row_cells)
+        cells = table.extract()  # 返回二维列表，每个元素为单元格文本
+        if cells:
+            for row_cells in cells:
+                row_data = []
+                for cell_text in row_cells:
+                    # 每个单元格可以进一步解析为段落（这里简化处理）
+                    cell_para = [{
+                        "type": "paragraph",
+                        "style": "Default",
+                        "list_level": None,
+                        "runs": [{"type": "text", "text": cell_text or ""}]
+                    }]
+                    row_data.append(cell_para)
+                rows_data.append(row_data)
+        
         return {"type": "table", "rows": rows_data}
 
-    def _parse_figure_block(self, block) -> Dict[str, Any]:
-        """解析图片块"""
-        img_filename = getattr(block, 'image_filename', None)
-        if img_filename:
-            return {
-                "type": "paragraph",
-                "style": "Figure",
-                "list_level": None,
-                "runs": [{
-                    "type": "image",
-                    "src": os.path.join(self.image_dir, img_filename)
-                }]
-            }
-        return {"type": "paragraph", "style": "Figure", "list_level": None, "runs": []}
+    def _parse_figure_block(self, block: dict) -> Dict[str, Any]:
+        """
+        解析图片块（备用方法）。
+        """
+        return {
+            "type": "paragraph",
+            "style": "Figure",
+            "list_level": None,
+            "runs": []
+        }
 
     def find_paragraphs_with_keyword(self, keyword: str) -> List[str]:
         """查找包含关键字的段落文本"""
@@ -199,3 +272,8 @@ class PdfHandler:
                     table_data.append(row_data)
                 all_tables.append(table_data)
         return all_tables
+
+    def close(self):
+        """释放资源"""
+        if hasattr(self, 'doc') and self.doc:
+            self.doc.close()
